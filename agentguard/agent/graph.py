@@ -30,7 +30,7 @@ class _RunContext:
     """Mutable per-execution data shared with ToolNode tool wrappers."""
 
     def __init__(self, task: str, failure_mode: str | None, max_tool_calls: int) -> None:
-        self.state = ExecutionState(user_input=task, execution_status="running", failure_mode=failure_mode)
+        self.state = ExecutionState(user_input=task, execution_status="running", execution_mode="llm", failure_mode=failure_mode)
         self.events = EventCollector(self.state.execution_id, self.state.task_id)
         self.failure_mode = failure_mode
         self.max_tool_calls = max_tool_calls

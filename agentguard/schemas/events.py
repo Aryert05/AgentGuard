@@ -8,6 +8,7 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from agentguard.telemetry.privacy import redact_metadata
 
 
 class EventType(str, Enum):
@@ -47,20 +48,7 @@ class ExecutionEvent(BaseModel):
     @field_validator("metadata", mode="before")
     @classmethod
     def redact_sensitive_metadata(cls, value: Any) -> Any:
-        sensitive_names = ("api_key", "access_token", "authorization", "credential", "password", "secret", "token")
-        secret_pattern = re.compile(r"(?i)(api[_-]?key|access[_-]?token|authorization|password|secret|token)\s*[:=]\s*([^\s,;]+)")
-        bearer_pattern = re.compile(r"(?i)\bBearer\s+[^\s,;]+")
-        key_pattern = re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b")
-        def clean(item: Any) -> Any:
-            if isinstance(item, dict):
-                return {key: "[REDACTED]" if any(name in str(key).lower() for name in sensitive_names) else clean(val)
-                        for key, val in item.items()}
-            if isinstance(item, list):
-                return [clean(child) for child in item]
-            if isinstance(item, str):
-                return key_pattern.sub("[REDACTED]", bearer_pattern.sub("Bearer [REDACTED]", secret_pattern.sub(r"\1=[REDACTED]", item)))
-            return item
-        return clean(value or {})
+        return redact_metadata(value or {})
 
     @field_validator("error_message")
     @classmethod

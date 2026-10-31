@@ -7,13 +7,14 @@ name = "agentguard"
 version = "0.1.0"
 description = "AI agent execution foundation with structured telemetry"
 requires-python = ">=3.11"
-dependencies = ["langgraph>=0.2,<2", "langchain>=0.3,<2", "langchain-openai>=0.2,<2", "pydantic>=2,<3", "python-dotenv>=1,<2"]
+dependencies = ["langgraph>=0.2,<2", "langchain>=0.3,<2", "langchain-openai>=0.2,<2", "pydantic>=2,<3", "python-dotenv>=1,<2", "SQLAlchemy>=2,<3", "psycopg[binary]>=3.1,<4", "alembic>=1.13,<2", "pandas>=2,<3", "numpy>=1.26,<3", "matplotlib>=3.8,<4"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["integration: requires an external PostgreSQL test database"]
 
 [tool.setuptools.packages.find]
 include = ["agentguard*"]

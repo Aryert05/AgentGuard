@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agentguard}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-this-local-password}
+      POSTGRES_DB: ${POSTGRES_DB:-agentguard}
+    ports:
+      # Publish only on loopback; avoid colliding with native PostgreSQL on 5432.
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5433}:5432"
+    volumes:
+      - agentguard-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agentguard} -d ${POSTGRES_DB:-agentguard}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  agentguard-postgres:
