@@ -3,10 +3,37 @@
 AgentGuard provides an iterative tool-using agent, deterministic offline execution, and structured execution events. Phase 2 adds optional PostgreSQL telemetry persistence and a reproducible synthetic prefix dataset. In provider mode, LangGraph routes model messages through a bounded `ToolNode` loop; offline mode is deterministic and rule-based. See the [Phase 1 guide](docs/phase-01-agent-foundation.md) and [Phase 2 guide](docs/phase-02-telemetry-dataset.md).
 
 ```bash
-python -m pip install -e '.[dev]'
+python -m pip install -e .
 python -m agentguard --demo "Calculate the total cost of 15 products priced at 250 each"
 python -m agentguard --demo "Find information about Tata Motors and summarize the available company data"
+```
+
+For development and tests, install the development extra. Phase 3 ML preparation tests and sklearn preprocessing additionally require the optional ML extra:
+
+```bash
+python -m pip install -e '.[dev]'
 python -m pytest
+
+# Phase 3.2 data preparation, split, and sklearn preprocessing work/tests
+python -m pip install -e '.[dev,ml]'
+python -m pytest tests/unit/test_phase3_data.py tests/unit/test_phase3_splitting.py tests/unit/test_phase3_preprocessing.py
+
+# Phase 3.3 train-only fitting, grouped analysis, and validation-only threshold selection
+python -m pytest tests/unit/test_phase3_evaluation.py tests/unit/test_phase3_training.py tests/unit/test_phase3_analysis.py
+python -m agentguard.ml.train --strategy execution_held_out
+python -m agentguard.ml.train --strategy task_template_held_out
+```
+
+The base `agentguard.ml.data` loader and group-splitting utilities do not import scikit-learn. Importing or using ML models and preprocessing requires the `ml` extra. Use `fit_transform_partitions` for AgentTrace data so the dataset/split binding is checked before preprocessing; `build_preprocessing_pipeline` is a raw sklearn pipeline factory and cannot enforce split provenance when fitted directly. The Phase 3.3 commands train baselines on grouped training partitions, select thresholds on validation data, and write JSON artifacts under the ignored `data/generated/` directory. The execution-held-out run is primary; the task-template-held-out run is exploratory. Both include execution/template-balanced metrics, cluster-bootstrap intervals, and prefix/time strata, write a SHA-256 sidecar, and record source-file/code-snapshot provenance. They do not score the test partitions or save model binaries. Results are preliminary and use a small synthetic dataset.
+
+Phase 3.4 exposes deterministic diagnosis and bounded recovery interfaces in `agentguard.diagnostics`. Call `DiagnosticService.analyze(events, ml_signal=...)` with an observed event prefix to get evidence and recommendations. `DiagnosticRecoveryService` can pass a recommendation to a caller-supplied one-action executor under `RecoveryPolicy` limits. Approval-gated/high-risk actions are returned without execution. The default in-memory attempt ledger belongs to one controller; inject one shared `InMemoryRecoveryAttemptLedger` instance to coordinate controllers in one process. For durable cross-process and restart-safe enforcement, provide the same `DatabaseRecoveryTelemetry(session_factory)` as both the controller's telemetry sink and attempt ledger; database concurrency has not been verified in this project environment. Migration `0002_recovery_telemetry` adds session, attempt, and budget tables. This is a Python service boundary: the agent runtime does not automatically launch recovery.
+
+After applying migration `0002_recovery_telemetry`, grant the restricted runtime role only the recovery-table permissions needed by the persistence repository:
+
+```sql
+GRANT SELECT, INSERT, UPDATE ON TABLE recovery_sessions TO agentguard_app;
+GRANT SELECT, INSERT ON TABLE recovery_attempts TO agentguard_app;
+GRANT SELECT, INSERT, UPDATE ON TABLE recovery_attempt_budgets TO agentguard_app;
 ```
 
 ## Phase 2: PostgreSQL telemetry and AgentTrace

@@ -96,6 +96,8 @@ def test_deterministic_multiple_tools_and_partial_success():
     assert state.execution_status == "partially_completed"
     assert [call.status for call in state.tool_calls] == ["completed", "failed"]
     assert events.events[-1].event_type == EventType.EXECUTION_FAILED
+    assert events.events[-1].status == "failed"
+    assert events.events[-1].metadata["execution_status"] == "partially_completed"
     _events_for(state, events)
 
 
@@ -224,6 +226,10 @@ def test_provider_partial_success_status(monkeypatch):
     state, events = run_llm("task", "openai", "fake-model")
     assert state.execution_status == "partially_completed"
     assert [call.status for call in state.tool_calls] == ["completed", "failed"]
+    terminal = events.events[-1]
+    assert terminal.event_type == EventType.EXECUTION_FAILED
+    assert terminal.status == "failed"
+    assert terminal.metadata["execution_status"] == "partially_completed"
     _events_for(state, events)
 
 

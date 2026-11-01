@@ -11,6 +11,7 @@ from typing import Annotated, Any, TypedDict
 from agentguard.config.settings import validate_failure_mode
 from agentguard.schemas.events import EventCollector, EventType, ExecutionEvent
 from agentguard.schemas.state import ExecutionState, ToolCall
+from agentguard.telemetry.privacy import fingerprint_tool_arguments
 from agentguard.tools.calculator import CalculatorArgs, calculate
 from agentguard.tools.company import CompanyArgs, get_company
 from agentguard.tools.search import SearchArgs, search
@@ -151,7 +152,10 @@ def run_llm(task: str, provider: str, model_name: str, *, failure_mode: str | No
                 context.pending_tools.append(str(tool_call.get("name", "unknown")))
                 context.emit(EventType.TOOL_SELECTED, "agent", "selected", tool_name=tool_call.get("name"),
                     step_number=state.current_step + index,
-                    metadata={"argument_names": sorted((tool_call.get("args") or {}).keys())})
+                    metadata={
+                        "argument_names": sorted((tool_call.get("args") or {}).keys()),
+                        "arguments_fingerprint": fingerprint_tool_arguments(tool_call.get("args") or {}),
+                    })
             return {"messages": [response]}
         except Exception as exc:
             request.status = "failed"
@@ -241,10 +245,11 @@ def _finish_context(context: _RunContext) -> None:
     else:
         state.execution_status, terminal, error = "completed", EventType.EXECUTION_COMPLETED, None
     state.end_time = datetime.now(timezone.utc)
-    context.emit(terminal, "agent", state.execution_status,
+    context.emit(terminal, "agent", "completed" if terminal == EventType.EXECUTION_COMPLETED else "failed",
         duration_ms=(time.monotonic() - context.started) * 1000,
         error_type="ExecutionIncomplete" if error else None, error_message=error,
-        metadata={"successful_tool_calls": successes, "failed_tool_calls": failures})
+        metadata={"execution_status": state.execution_status,
+                  "successful_tool_calls": successes, "failed_tool_calls": failures})
 
 
 def _fail_context(context: _RunContext, exc: Exception, message: str) -> None:
@@ -255,6 +260,7 @@ def _fail_context(context: _RunContext, exc: Exception, message: str) -> None:
     state.execution_status = "partially_completed" if successes else "failed"
     state.final_output = f"{message}: {exc}"
     state.end_time = datetime.now(timezone.utc)
-    context.emit(EventType.EXECUTION_FAILED, "agent", state.execution_status,
+    context.emit(EventType.EXECUTION_FAILED, "agent", "failed",
         duration_ms=(time.monotonic() - context.started) * 1000,
-        error_type=type(exc).__name__, error_message=str(exc))
+        error_type=type(exc).__name__, error_message=str(exc),
+        metadata={"execution_status": state.execution_status})

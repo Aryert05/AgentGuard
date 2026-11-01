@@ -1,6 +1,8 @@
 """Small, conservative redaction helpers for persisted telemetry."""
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from typing import Any
 
@@ -23,6 +25,16 @@ def redact_text(value: str | None) -> str | None:
 def safe_task_description(value: str, *, limit: int = 2000) -> str:
     """Store a useful, bounded task description with common credential forms removed."""
     return (redact_text(value) or "")[:limit]
+
+
+def fingerprint_tool_arguments(value: Any) -> str:
+    """Return a stable digest without retaining raw tool argument values."""
+    try:
+        encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                             allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Tool arguments must be finite JSON-compatible values") from exc
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def redact_metadata(value: Any) -> Any:

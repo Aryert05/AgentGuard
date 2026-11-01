@@ -11,6 +11,7 @@ from uuid import UUID, uuid4, uuid5
 from agentguard.schemas.events import EventCollector, EventType, ExecutionEvent
 from agentguard.schemas.state import ExecutionState, ToolCall
 from agentguard.config.settings import validate_failure_mode
+from agentguard.telemetry.privacy import fingerprint_tool_arguments
 from agentguard.tools.calculator import calculate
 from agentguard.tools.company import get_company
 from agentguard.tools.search import search
@@ -101,7 +102,8 @@ def run_plan(task: str, *, failure_mode: str | None = None,
             state.current_step += 1
             _emit(state, events, EventType.TOOL_SELECTED, "agent", "selected", now=now,
                   deterministic_event_ids=deterministic_event_ids, tool_name=tool_name,
-                  metadata={"argument_names": sorted(arguments)})
+                  metadata={"argument_names": sorted(arguments),
+                            "arguments_fingerprint": fingerprint_tool_arguments(arguments)})
             call = ToolCall(tool_name=tool_name, arguments=arguments, status="started")
             state.tool_calls.append(call)
             _emit(state, events, EventType.TOOL_STARTED, "tool", "running", now=now,
@@ -137,11 +139,13 @@ def run_plan(task: str, *, failure_mode: str | None = None,
         state.final_output = "\n".join(outputs) if outputs else "No tool result was produced."
         state.execution_status = ("failed" if not outputs else "partially_completed") if state.errors else "completed"
         terminal_type = EventType.EXECUTION_COMPLETED if state.execution_status == "completed" else EventType.EXECUTION_FAILED
-        _emit(state, events, terminal_type, "agent", state.execution_status, now=now,
+        terminal_status = "completed" if terminal_type == EventType.EXECUTION_COMPLETED else "failed"
+        _emit(state, events, terminal_type, "agent", terminal_status, now=now,
               deterministic_event_ids=deterministic_event_ids, duration_ms=(timer()-started)*1000,
               error_type="ToolExecutionError" if state.errors else None,
               error_message=f"{len(state.errors)} tool call(s) failed" if state.errors else None,
-              metadata={"successful_tool_calls": len(outputs), "failed_tool_calls": len(state.errors)})
+              metadata={"execution_status": state.execution_status,
+                        "successful_tool_calls": len(outputs), "failed_tool_calls": len(state.errors)})
     except Exception as exc:
         state.execution_status, state.final_output = "failed", f"Execution failed: {exc}"
         state.errors.append({"type": type(exc).__name__, "message": str(exc), "tool_name": ""})
