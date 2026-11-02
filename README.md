@@ -8,6 +8,19 @@ python -m agentguard --demo "Calculate the total cost of 15 products priced at 2
 python -m agentguard --demo "Find information about Tata Motors and summarize the available company data"
 ```
 
+## Phase 4 API foundation
+
+Phase 4.1 adds a FastAPI application factory with versioned routes under `/api/v1`. Only the liveness endpoint is implemented; execution, telemetry, ML, diagnostics, recovery, and database-readiness endpoints are not part of this phase.
+
+```bash
+python -m pip install -e '.[dev,api]'
+uvicorn agentguard.api.main:create_app --factory --host 127.0.0.1 --port 8000
+curl http://127.0.0.1:8000/api/v1/health
+python -m pytest tests/unit/test_phase41_api.py
+```
+
+Interactive docs are available at `http://127.0.0.1:8000/docs` when enabled. Docs default on in `development`, `local`, and `test`, and off in `staging` and `production`, including direct `ApiSettings` construction. Enabling docs in staging or production is a deliberate override: set `AGENTGUARD_API_DOCS_ENABLED=true` only for controlled use, or pass `docs_enabled=True` to `ApiSettings` when constructing the app directly. `AGENTGUARD_API_ENVIRONMENT` validates the environment label reported by `/api/v1/health`. The liveness endpoint deliberately does not check PostgreSQL or any other external dependency.
+
 For development and tests, install the development extra. Phase 3 ML preparation tests and sklearn preprocessing additionally require the optional ML extra:
 
 ```bash
