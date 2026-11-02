@@ -10,15 +10,54 @@ from agentguard.api.dependencies import AppServices
 from agentguard.api.errors import install_exception_handlers
 from agentguard.api.middleware import RequestIdMiddleware
 from agentguard.api.router import API_V1_PREFIX, build_api_router
+from agentguard.application.execution_service import (
+    AgentExecutionRunner,
+    ExecutionService,
+)
+from agentguard.application.trace_service import DatabaseTraceReader, TraceService
+from agentguard.config.database import DatabaseSettings
+from agentguard.config.settings import load_settings
+from agentguard.database.connection import create_session_factory
 
 
-def create_app(settings: ApiSettings | None = None) -> FastAPI:
+def create_app(
+    settings: ApiSettings | None = None,
+    *,
+    services: AppServices | None = None,
+) -> FastAPI:
     api_settings = settings or ApiSettings.from_env()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.services = AppServices(settings=api_settings)
-        yield
+        if services is not None:
+            app.state.services = services
+            yield
+            return
+
+        database_settings = DatabaseSettings.from_env()
+        agent_settings = load_settings()
+        session_factory = (
+            create_session_factory(database_settings)
+            if database_settings.enabled
+            else None
+        )
+        try:
+            app.state.services = AppServices(
+                settings=api_settings,
+                execution_service=ExecutionService(
+                    AgentExecutionRunner(agent_settings),
+                    persistence_enabled=database_settings.enabled,
+                    llm_configured=agent_settings.llm_configured,
+                ),
+                trace_service=TraceService(
+                    DatabaseTraceReader(session_factory),
+                    persistence_enabled=database_settings.enabled,
+                ),
+            )
+            yield
+        finally:
+            if session_factory is not None:
+                session_factory.kw["bind"].dispose()
 
     app = FastAPI(
         title=api_settings.service_name,
