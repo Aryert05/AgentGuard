@@ -3,13 +3,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from sqlalchemy.orm import Session, sessionmaker
+
 from agentguard.agent.runtime import run_agent
 from agentguard.application.errors import (
     ExecutionUnavailableError,
     LLMNotConfiguredError,
     PersistenceUnavailableError,
 )
-from agentguard.application.protocols import ExecutionMode, ExecutionRunner
+from agentguard.application.protocols import ExecutionMode, ExecutionRunner, TraceWriter
 from agentguard.config.settings import ConfigurationError, Settings
 from agentguard.database.repositories import TelemetryPersistenceError
 from agentguard.schemas.events import EventCollector
@@ -38,6 +40,30 @@ class AgentExecutionRunner:
             demo=mode == "deterministic",
             settings=self.settings,
             max_tool_calls=max_tool_calls,
+            persist=False,
+        )
+
+
+class DatabaseTraceWriter:
+    """Persist execution traces through the shared application session factory."""
+
+    def __init__(
+        self,
+        session_factory: sessionmaker[Session],
+        *,
+        store_task_text: bool = False,
+    ) -> None:
+        self.session_factory = session_factory
+        self.store_task_text = store_task_text
+
+    def persist(self, state: ExecutionState, events: EventCollector) -> None:
+        from agentguard.database.repositories import persist_execution_trace
+
+        persist_execution_trace(
+            self.session_factory,
+            state,
+            events,
+            store_task_text=self.store_task_text,
         )
 
 
@@ -50,20 +76,27 @@ class ExecutionService:
         *,
         persistence_enabled: bool,
         llm_configured: bool,
+        trace_writer: TraceWriter | None = None,
     ) -> None:
         self.runner = runner
         self.persistence_enabled = persistence_enabled
         self.llm_configured = llm_configured
+        self.trace_writer = trace_writer
 
     def run(self, request: ExecutionRequest) -> ExecutionResponse:
         if request.mode == "llm" and not self.llm_configured:
             raise LLMNotConfiguredError()
+        if self.persistence_enabled and self.trace_writer is None:
+            raise PersistenceUnavailableError()
         try:
-            state, _events = self.runner.run(
+            state, events = self.runner.run(
                 request.task,
                 mode=request.mode,
                 max_tool_calls=request.max_tool_calls,
             )
+            if self.persistence_enabled:
+                assert self.trace_writer is not None
+                self.trace_writer.persist(state, events)
         except TelemetryPersistenceError:
             raise PersistenceUnavailableError() from None
         except (ConfigurationError, ImportError):

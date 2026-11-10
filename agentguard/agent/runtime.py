@@ -11,12 +11,13 @@ from agentguard.telemetry.persistence import persist_if_configured
 
 
 def run_agent(task: str, *, demo: bool = False, settings: Settings | None = None,
-              failure_mode: str | None = None, max_tool_calls: int = MAX_TOOL_CALLS) -> tuple[ExecutionState, EventCollector]:
+              failure_mode: str | None = None, max_tool_calls: int = MAX_TOOL_CALLS,
+              persist: bool = True) -> tuple[ExecutionState, EventCollector]:
     if not task.strip():
         raise ValueError("Task must not be empty")
     config = settings or load_settings()
     effective_failure_mode = validate_failure_mode(failure_mode or config.failure_mode)
-    database = DatabaseSettings.from_env()
+    database = DatabaseSettings.from_env() if persist else None
     if demo:
         result = run_plan(task, failure_mode=effective_failure_mode)
     else:
@@ -24,5 +25,6 @@ def run_agent(task: str, *, demo: bool = False, settings: Settings | None = None
             raise RuntimeError("No LLM provider is configured. Set AGENTGUARD_LLM_PROVIDER and AGENTGUARD_LLM_MODEL (plus provider credentials), or run `python -m agentguard --demo` for deterministic rule-based execution.")
         result = run_llm(task, config.provider or "", config.model or "", failure_mode=effective_failure_mode,
                          max_tool_calls=max_tool_calls)
-    persist_if_configured(result[0], result[1], database)
+    if database is not None:
+        persist_if_configured(result[0], result[1], database)
     return result

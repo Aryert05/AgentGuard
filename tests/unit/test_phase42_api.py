@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
@@ -12,6 +13,8 @@ from sqlalchemy.orm import sessionmaker
 from agentguard.api import ApiSettings, create_app
 from agentguard.api.dependencies import AppServices
 from agentguard.application.execution_service import AgentExecutionRunner, ExecutionService
+from agentguard.application.errors import PersistenceUnavailableError
+from agentguard.application.diagnosis_service import DiagnosisService as ApiDiagnosisService
 from agentguard.application.trace_service import DatabaseTraceReader, TraceService
 from agentguard.config.database import DatabaseSettings
 from agentguard.config.settings import ConfigurationError, Settings
@@ -22,6 +25,7 @@ from agentguard.database.repositories import (
 )
 from agentguard.schemas.events import EventCollector
 from agentguard.schemas.state import ExecutionState, ToolCall
+from agentguard.diagnostics.service import DiagnosticService
 
 
 def _state(
@@ -110,24 +114,43 @@ class FakeReader:
         return self.events
 
 
+class FakeWriter:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.error = error
+        self.calls: list[tuple[ExecutionState, EventCollector]] = []
+
+    def persist(self, state: ExecutionState, events: EventCollector) -> None:
+        self.calls.append((state, events))
+        if self.error is not None:
+            raise self.error
+
+
 def _build_app(
     *,
     runner: FakeRunner | AgentExecutionRunner | None = None,
     reader: FakeReader | DatabaseTraceReader | None = None,
+    writer: FakeWriter | None = None,
     persistence_enabled: bool = False,
     llm_configured: bool = False,
 ):
     settings = ApiSettings(environment="test", docs_enabled=True)
     execution_runner = runner or FakeRunner()
     trace_reader = reader or FakeReader()
+    trace_writer = writer or (FakeWriter() if persistence_enabled else None)
     services = AppServices(
         settings=settings,
         execution_service=ExecutionService(
             execution_runner,
             persistence_enabled=persistence_enabled,
             llm_configured=llm_configured,
+            trace_writer=trace_writer,
         ),
         trace_service=TraceService(
+            trace_reader,
+            persistence_enabled=persistence_enabled,
+        ),
+        diagnosis_service=ApiDiagnosisService(
+            DiagnosticService(),
             trace_reader,
             persistence_enabled=persistence_enabled,
         ),
@@ -179,7 +202,7 @@ def test_deterministic_execution_uses_existing_agent_runtime(monkeypatch) -> Non
     monkeypatch.setattr(
         DatabaseSettings,
         "from_env",
-        classmethod(lambda cls: DatabaseSettings(url=None)),
+        classmethod(lambda cls: pytest.fail("offline API execution must not read DB settings")),
     )
     runner = AgentExecutionRunner(Settings(provider=None, model=None, failure_mode=None))
     app, _, _ = _build_app(runner=runner)
@@ -210,6 +233,98 @@ def test_deterministic_execution_uses_existing_agent_runtime(monkeypatch) -> Non
     ]
     assert "3750" in body["final_output"]
     assert body["persisted"] is False
+
+
+def test_agent_execution_runner_disables_runtime_owned_persistence(monkeypatch) -> None:
+    state = _state()
+    events = EventCollector(state.execution_id, state.task_id)
+    calls = []
+
+    def fake_run_agent(*args, **kwargs):
+        calls.append(kwargs)
+        return state, events
+
+    monkeypatch.setattr("agentguard.application.execution_service.run_agent", fake_run_agent)
+    runner = AgentExecutionRunner(Settings(provider=None, model=None, failure_mode=None))
+    runner.run("task", mode="deterministic", max_tool_calls=2)
+
+    assert calls[0]["persist"] is False
+    assert calls[0]["max_tool_calls"] == 2
+
+
+def test_database_trace_writer_delegates_to_phase2_repository(monkeypatch) -> None:
+    from agentguard.application.execution_service import DatabaseTraceWriter
+
+    state = _state()
+    events = EventCollector(state.execution_id, state.task_id)
+    factory = object()
+    calls = []
+
+    def fake_persist(session_factory, saved_state, saved_events, *, store_task_text):
+        calls.append((session_factory, saved_state, saved_events, store_task_text))
+
+    monkeypatch.setattr(
+        "agentguard.database.repositories.persist_execution_trace", fake_persist
+    )
+    DatabaseTraceWriter(factory, store_task_text=True).persist(state, events)
+    assert calls == [(factory, state, events, True)]
+
+
+def test_api_lifespan_shares_one_session_factory_and_disposes_it(monkeypatch) -> None:
+    from agentguard.api.main import create_app as create_default_app
+
+    class Bind:
+        disposed = False
+
+        def dispose(self):
+            self.disposed = True
+
+    bind = Bind()
+    factory = SimpleNamespace(kw={"bind": bind})
+    created = []
+
+    monkeypatch.setattr(
+        "agentguard.api.main.DatabaseSettings.from_env",
+        classmethod(lambda cls: DatabaseSettings(url="postgresql+psycopg://runtime@db/agentguard")),
+    )
+    monkeypatch.setattr(
+        "agentguard.api.main.load_settings",
+        lambda: Settings(provider=None, model=None, failure_mode=None),
+    )
+    monkeypatch.setattr(
+        "agentguard.api.main.create_session_factory",
+        lambda settings: created.append(settings) or factory,
+    )
+    app = create_default_app(ApiSettings(environment="test", docs_enabled=False))
+
+    with TestClient(app):
+        services = app.state.services
+        assert services.trace_service.reader.session_factory is factory
+        assert services.execution_service.trace_writer.session_factory is factory
+        assert services.execution_service.trace_writer.store_task_text is False
+    assert created and bind.disposed is True
+
+
+def test_offline_app_lifespan_never_creates_database_factory(monkeypatch) -> None:
+    from agentguard.api.main import create_app as create_default_app
+
+    monkeypatch.setattr(
+        "agentguard.api.main.DatabaseSettings.from_env",
+        classmethod(lambda cls: DatabaseSettings(url=None)),
+    )
+    monkeypatch.setattr(
+        "agentguard.api.main.create_session_factory",
+        lambda *_args, **_kwargs: pytest.fail("offline mode must not create an engine"),
+    )
+    app = create_default_app(ApiSettings(environment="test", docs_enabled=False))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/executions",
+            json={"task": "Calculate 2 plus 3", "mode": "deterministic"},
+        )
+    assert response.status_code == 201
+    assert response.json()["persisted"] is False
 
 
 def test_execution_response_omits_internal_state_and_redacts_output() -> None:
@@ -264,13 +379,48 @@ def test_failed_execution_returns_201_with_failed_status() -> None:
 
 
 def test_persisted_flag_reflects_application_configuration() -> None:
-    app, _, _ = _build_app(persistence_enabled=True)
+    writer = FakeWriter()
+    app, runner, _ = _build_app(persistence_enabled=True, writer=writer)
 
     with TestClient(app) as client:
         response = client.post("/api/v1/executions", json={"task": "calculate 2 + 3"})
 
     assert response.status_code == 201
     assert response.json()["persisted"] is True
+    assert len(writer.calls) == 1
+    assert writer.calls[0][0] is runner.state
+    assert writer.calls[0][1].execution_id == runner.state.execution_id
+
+
+def test_configured_persistence_without_writer_fails_closed() -> None:
+    # Do not claim persistence when a configured deployment lacks its writer.
+    from agentguard.api.schemas.execution import ExecutionRequest
+
+    runner = FakeRunner()
+    execution_service = ExecutionService(
+        runner, persistence_enabled=True, llm_configured=False
+    )
+    with pytest.raises(PersistenceUnavailableError):
+        execution_service.run(ExecutionRequest(task="calculate 2 + 3"))
+    assert runner.calls == []
+
+
+def test_writer_failure_returns_sanitized_503() -> None:
+    runner = FakeRunner()
+    writer = FakeWriter(
+        error=TelemetryPersistenceError(
+            "postgresql://agentguard:secret-password@database/agentguard"
+        )
+    )
+    app, _, _ = _build_app(runner=runner, writer=writer, persistence_enabled=True)
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/executions", json={"task": "calculate 2 + 3"})
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "persistence_unavailable"
+    assert "secret-password" not in response.text
+    assert "postgresql://" not in response.text
 
 
 @pytest.mark.parametrize(

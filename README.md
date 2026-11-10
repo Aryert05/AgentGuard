@@ -10,7 +10,7 @@ python -m agentguard --demo "Find information about Tata Motors and summarize th
 
 ## Phase 4 API
 
-Phase 4.1 adds a FastAPI application factory with versioned routes under `/api/v1`. Phase 4.2 adds synchronous agent execution and persisted trace retrieval. Execution submission uses the existing `run_agent` path; it does not introduce a second agent implementation. Diagnostics, ML inference, recovery endpoints, and database readiness remain outside this phase.
+Phase 4.1 adds a FastAPI application factory with versioned routes under `/api/v1`. Phase 4.2 adds synchronous agent execution and persisted trace retrieval, Phase 4.3 adds diagnosis and informational recovery recommendations, and Phase 4.4 integrates PostgreSQL persistence and retrieval. Phase 4.5 adds cross-component end-to-end regression coverage and hardening. Execution submission uses the existing `run_agent` path; it does not introduce a second agent implementation. Recommendations remain informational: the API does not execute recovery actions.
 
 ```bash
 python -m pip install -e '.[dev,api]'
@@ -24,10 +24,28 @@ curl -X POST http://127.0.0.1:8000/api/v1/executions \
 curl http://127.0.0.1:8000/api/v1/executions/<execution_id>
 curl 'http://127.0.0.1:8000/api/v1/executions/<execution_id>/events?limit=100'
 
-python -m pytest tests/unit/test_phase41_api.py tests/unit/test_phase42_api.py
+python -m pytest tests/unit/test_phase41_api.py tests/unit/test_phase42_api.py tests/unit/test_phase43_api.py tests/unit/test_phase45_api.py
 ```
 
 `POST /api/v1/executions` is synchronous and non-idempotent; do not retry it automatically. Agent-level `failed` or `partially_completed` results still return `201`; inspect `status`. When persistence is disabled, execution returns `persisted=false` and the summary/event routes return `503 persistence_not_configured`. LLM mode without a configured provider and model returns `503 llm_not_configured`. Requests are bounded to an 8,000-character task and `max_tool_calls` `1..8`; event pages accept `limit` `1..500` and the `event_index` cursor. Public responses omit messages, raw tool arguments/results, internal state, and secrets.
+
+When `AGENTGUARD_DATABASE_URL` (or the legacy `DATABASE_URL`) is configured, the API creates one SQLAlchemy session factory during startup and shares it between execution persistence and trace retrieval; it disposes the engine at shutdown. The API calls the existing agent runtime with runtime-owned persistence disabled, then writes the returned execution and events once through the Phase 2 repository transaction. `persisted=true` is returned only after that transaction commits. Database failures return `503 persistence_unavailable`; execution is not retried. With no database URL, no engine is created and offline execution remains available. Apply schema changes separately using `AGENTGUARD_MIGRATION_DATABASE_URL` and `alembic upgrade head`; runtime credentials retain the Phase 2 least-privilege grants.
+
+### Diagnosis and recommendations
+
+`POST /api/v1/diagnoses` accepts `{"events": [...]}` and returns the Phase 3.4 diagnosis plus informational recovery recommendations. Events use the existing `ExecutionEvent` schema and prefix validation. The request can contain at most 1,000 events; an empty list is valid. `POST /api/v1/executions/{execution_id}/diagnoses` diagnoses a persisted event prefix using a bounded, ordered read of at most 1,000 events. It returns `404 execution_not_found` for an unknown execution, `503 persistence_unavailable` when persistence is disabled or unavailable, and `413 diagnosis_trace_too_large` if the stored trace exceeds that cap.
+
+Both routes reuse `DiagnosticService.analyze` and return API-specific response schemas. Clients cannot provide `ml_signal`; an optional scorer can be injected server-side through `create_app(ml_scorer=...)`. If scoring fails, rule-based diagnosis is returned with a generic `ml_error`; internal exception details are not exposed. Recommendations are informational only: these routes do not execute tools, invoke recovery controllers/executors, or persist diagnoses or recovery sessions.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/diagnoses \
+  -H 'Content-Type: application/json' \
+  -d '{"events":[{"event_id":"evt-1","execution_id":"exec-1","task_id":"task-1","step_number":0,"timestamp":"2026-11-02T10:00:00Z","event_type":"execution_started","component":"agent","status":"running","metadata":{}}]}'
+
+curl -X POST http://127.0.0.1:8000/api/v1/executions/<execution_id>/diagnoses
+```
+
+The response contains `diagnosis`, `recommendations`, and nullable `ml_error`. Structurally invalid events use the standard `422 validation_error`; semantically invalid prefixes return `422 invalid_diagnosis_prefix`. See the [Phase 4.3 diagnosis report](docs/reports/phase-04-3-diagnosis-recommendations-report.md), [Phase 4.4 PostgreSQL report](docs/reports/phase-04-4-postgresql-integration-report.md), and [Phase 4.5 end-to-end report](docs/reports/phase-04-5-end-to-end-testing-report.md) for implementation details and verification limits.
 
 Interactive docs are available at `http://127.0.0.1:8000/docs` when enabled. Docs default on in `development`, `local`, and `test`, and off in `staging` and `production`, including direct `ApiSettings` construction. Enabling docs in staging or production is a deliberate override: set `AGENTGUARD_API_DOCS_ENABLED=true` only for controlled use, or pass `docs_enabled=True` to `ApiSettings` when constructing the app directly. `AGENTGUARD_API_ENVIRONMENT` validates the environment label reported by `/api/v1/health`. The liveness endpoint deliberately does not check PostgreSQL or any other external dependency. The API is intended for local, single-tenant use; authentication, rate limiting, and body-size middleware remain deployment requirements before public exposure.
 

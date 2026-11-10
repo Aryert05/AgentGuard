@@ -178,3 +178,83 @@ def test_postgres_persistence_idempotency_conflicts_fk_and_rollback(monkeypatch)
             session.execute(text("DROP TABLE IF EXISTS agentguard_runtime_privilege_probe"))
         engine.dispose()
         admin_engine.dispose()
+
+
+def test_fastapi_execution_persists_and_retrieves_with_runtime_role(monkeypatch):
+    """Exercise API write/read wiring against the configured disposable DB."""
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from alembic import command
+    from alembic.config import Config
+    from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine, delete
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.engine import make_url
+
+    from agentguard.api import ApiSettings, create_app
+    from agentguard.database.models import ExecutionEventRecord, ExecutionRecord
+
+    monkeypatch.setenv("AGENTGUARD_DATABASE_URL", TEST_URL)
+    monkeypatch.setenv("AGENTGUARD_MIGRATION_DATABASE_URL", MIGRATION_URL)
+    monkeypatch.setenv("AGENTGUARD_STORE_TASK_TEXT", "false")
+    alembic = Config("alembic.ini")
+    alembic.set_main_option("sqlalchemy.url", MIGRATION_URL.replace("%", "%%"))
+    command.upgrade(alembic, "head")
+
+    admin_engine = create_engine(MIGRATION_URL, pool_pre_ping=True, hide_parameters=True)
+    admin_factory = sessionmaker(bind=admin_engine, expire_on_commit=False)
+    runtime_role = make_url(TEST_URL).username
+    quoted_role = admin_engine.dialect.identifier_preparer.quote(runtime_role)
+    with admin_engine.begin() as connection:
+        connection.exec_driver_sql(f"GRANT USAGE ON SCHEMA public TO {quoted_role}")
+        connection.exec_driver_sql(f"GRANT SELECT, INSERT, UPDATE ON TABLE executions TO {quoted_role}")
+        connection.exec_driver_sql(f"GRANT SELECT, INSERT ON TABLE execution_events TO {quoted_role}")
+
+    app = create_app(ApiSettings(environment="test", docs_enabled=False))
+    execution_id = None
+    try:
+        with TestClient(app) as client:
+            created = client.post(
+                "/api/v1/executions",
+                json={"task": "Calculate 2 plus 3", "mode": "deterministic"},
+            )
+            assert created.status_code == 201
+            assert created.json()["persisted"] is True
+            execution_id = created.json()["execution_id"]
+
+            summary = client.get(f"/api/v1/executions/{execution_id}")
+            assert summary.status_code == 200
+            assert summary.json()["execution_id"] == execution_id
+            assert summary.json()["status"] == "completed"
+
+            page = client.get(
+                f"/api/v1/executions/{execution_id}/events",
+                params={"limit": 2},
+            )
+            assert page.status_code == 200
+            first_page = page.json()
+            assert len(first_page["events"]) == 2
+            assert [event["event_index"] for event in first_page["events"]] == [0, 1]
+            assert first_page["next_after_event_index"] == 1
+
+            next_page = client.get(
+                f"/api/v1/executions/{execution_id}/events",
+                params={"limit": 10, "after_event_index": first_page["next_after_event_index"]},
+            )
+            assert next_page.status_code == 200
+            assert [event["event_index"] for event in next_page.json()["events"]] == list(
+                range(2, len(next_page.json()["events"]) + 2)
+            )
+            assert next_page.json()["next_after_event_index"] is None
+    finally:
+        if execution_id is not None:
+            with admin_factory.begin() as session:
+                session.execute(
+                    delete(ExecutionEventRecord).where(
+                        ExecutionEventRecord.execution_id == execution_id
+                    )
+                )
+                session.execute(
+                    delete(ExecutionRecord).where(ExecutionRecord.execution_id == execution_id)
+                )
+        admin_engine.dispose()

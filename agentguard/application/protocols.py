@@ -32,3 +32,8 @@ class TraceReader(Protocol):
         after_event_index: int | None,
     ) -> dict[str, Any] | None:
         """Return a bounded event page or None when the execution is unknown."""
+
+
+class TraceWriter(Protocol):
+    def persist(self, state: ExecutionState, events: EventCollector) -> None:
+        """Atomically persist one execution and its ordered telemetry events."""

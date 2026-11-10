@@ -48,3 +48,17 @@ class ExecutionUnavailableError(ApplicationError):
     code = "execution_unavailable"
     title = "Execution unavailable"
     detail = "The agent execution service is currently unavailable."
+
+
+class InvalidDiagnosisPrefixError(ApplicationError):
+    status_code = 422
+    code = "invalid_diagnosis_prefix"
+    title = "Invalid diagnosis prefix"
+    detail = "The supplied event prefix does not satisfy the diagnosis trace contract."
+
+
+class DiagnosisTraceTooLargeError(ApplicationError):
+    status_code = 413
+    code = "diagnosis_trace_too_large"
+    title = "Diagnosis trace too large"
+    detail = "The persisted execution has too many events for one diagnosis request."
