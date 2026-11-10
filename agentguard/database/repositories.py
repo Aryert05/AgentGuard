@@ -138,6 +138,25 @@ def _insert_events(session: Session, events: list[Any]) -> None:
             raise TelemetryPersistenceError(f"Conflicting telemetry event: {detail}")
 
 
+def _event_dict(event: ExecutionEventRecord) -> dict[str, Any]:
+    return {
+        "event_id": event.event_id,
+        "execution_id": event.execution_id,
+        "task_id": event.task_id,
+        "event_index": event.event_index,
+        "step_number": event.step_number,
+        "timestamp": event.timestamp,
+        "event_type": event.event_type,
+        "component": event.component,
+        "tool_name": event.tool_name,
+        "status": event.status,
+        "duration_ms": event.duration_ms,
+        "error_type": event.error_type,
+        "error_message": event.error_message,
+        "metadata": event.metadata_json,
+    }
+
+
 def retrieve_execution_trace(session_factory: sessionmaker[Session], execution_id: str) -> dict[str, Any] | None:
     """Return one execution and its ordered event dictionaries."""
     with session_factory() as session:
@@ -153,12 +172,42 @@ def retrieve_execution_trace(session_factory: sessionmaker[Session], execution_i
                 "completed_at": execution.completed_at, "total_duration_ms": execution.total_duration_ms,
                 "successful_tool_call_count": execution.successful_tool_call_count,
                 "failed_tool_call_count": execution.failed_tool_call_count, "metadata": execution.metadata_json},
-            "events": [{"event_id": event.event_id, "execution_id": event.execution_id,
-                "task_id": event.task_id, "event_index": event.event_index, "step_number": event.step_number,
-                "timestamp": event.timestamp, "event_type": event.event_type,
-                "component": event.component, "tool_name": event.tool_name, "status": event.status,
-                "duration_ms": event.duration_ms, "error_type": event.error_type,
-                "error_message": event.error_message, "metadata": event.metadata_json} for event in events]}
+            "events": [_event_dict(event) for event in events]}
+
+
+def retrieve_execution_events(
+    session_factory: sessionmaker[Session],
+    execution_id: str,
+    *,
+    limit: int,
+    after_event_index: int | None = None,
+) -> dict[str, Any] | None:
+    """Return one bounded, ordered event page without loading the full trace."""
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    with session_factory() as session:
+        if session.get(ExecutionRecord, execution_id) is None:
+            return None
+        statement = select(ExecutionEventRecord).where(
+            ExecutionEventRecord.execution_id == execution_id
+        )
+        if after_event_index is not None:
+            statement = statement.where(
+                ExecutionEventRecord.event_index > after_event_index
+            )
+        statement = statement.order_by(ExecutionEventRecord.event_index).limit(
+            limit + 1
+        )
+        events = session.scalars(statement).all()
+        has_more = len(events) > limit
+        page = events[:limit]
+        return {
+            "execution_id": execution_id,
+            "events": [_event_dict(event) for event in page],
+            "next_after_event_index": (
+                page[-1].event_index if has_more and page else None
+            ),
+        }
 
 
 def persist_recovery_session(session_factory: sessionmaker[Session], session: RecoverySession) -> None:

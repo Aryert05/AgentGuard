@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from agentguard.api.schemas.common import ProblemDetail, ValidationIssue
+from agentguard.application.errors import ApplicationError
 
 LOGGER = logging.getLogger("agentguard.api.errors")
 
@@ -163,6 +164,24 @@ async def _api_error_handler(request: Request, exc: ApiError) -> JSONResponse:
     )
 
 
+async def _application_error_handler(
+    request: Request, exc: ApplicationError
+) -> JSONResponse:
+    if exc.status_code >= 500:
+        LOGGER.error(
+            "Application error: %s",
+            exc.code,
+            extra={"request_id": _request_id(request), "path": request.url.path},
+        )
+    return _problem(
+        request,
+        status_code=exc.status_code,
+        code=exc.code,
+        title=exc.title,
+        detail=exc.detail,
+    )
+
+
 async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     LOGGER.exception(
         "Unhandled API exception",
@@ -185,4 +204,5 @@ def install_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(RequestValidationError, _request_validation_handler)
     app.add_exception_handler(StarletteHTTPException, _http_exception_handler)
     app.add_exception_handler(ApiError, _api_error_handler)
+    app.add_exception_handler(ApplicationError, _application_error_handler)
     app.add_exception_handler(Exception, _unhandled_exception_handler)

@@ -6,11 +6,17 @@ from dataclasses import dataclass
 from fastapi import Depends, Request
 
 from agentguard.api.config import ApiSettings
+from agentguard.application.execution_service import ExecutionService
+from agentguard.application.diagnosis_service import DiagnosisService
+from agentguard.application.trace_service import TraceService
 
 
 @dataclass(frozen=True)
 class AppServices:
     settings: ApiSettings
+    execution_service: ExecutionService
+    trace_service: TraceService
+    diagnosis_service: DiagnosisService
 
 
 def get_services(request: Request) -> AppServices:
@@ -22,3 +28,17 @@ def get_services(request: Request) -> AppServices:
 
 def get_settings(services: AppServices = Depends(get_services)) -> ApiSettings:
     return services.settings
+
+
+def get_execution_service(
+    services: AppServices = Depends(get_services),
+) -> ExecutionService:
+    return services.execution_service
+
+
+def get_trace_service(services: AppServices = Depends(get_services)) -> TraceService:
+    return services.trace_service
+
+
+def get_diagnosis_service(services: AppServices = Depends(get_services)) -> DiagnosisService:
+    return services.diagnosis_service
