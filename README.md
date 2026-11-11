@@ -12,6 +12,58 @@ python -m agentguard --demo "Find information about Tata Motors and summarize th
 
 Phase 4.1 adds a FastAPI application factory with versioned routes under `/api/v1`. Phase 4.2 adds synchronous agent execution and persisted trace retrieval, Phase 4.3 adds diagnosis and informational recovery recommendations, and Phase 4.4 integrates PostgreSQL persistence and retrieval. Phase 4.5 adds cross-component end-to-end regression coverage and hardening. Execution submission uses the existing `run_agent` path; it does not introduce a second agent implementation. Recommendations remain informational: the API does not execute recovery actions.
 
+## Phase 5: Observability Dashboard
+
+AgentGuard includes a modern React/TypeScript dashboard located in `frontend/`. It communicates with the FastAPI backend to provide real-time execution statistics, historical traces, ordered event timelines, root-cause failure intelligence, and informational recommendations.
+
+### Prerequisites
+
+- Node.js >= 18 (Node 20+ recommended)
+- Python 3.11+ with `.[api]` dependencies installed
+
+### Running the Full Application
+
+#### 1. Start the FastAPI Backend
+```bash
+python -m pip install -e '.[dev,api]'
+uvicorn agentguard.api.main:create_app --factory --host 127.0.0.1 --port 8000 --reload
+```
+The API is served at `http://127.0.0.1:8000`. Swagger documentation is accessible at `http://127.0.0.1:8000/docs`.
+
+#### 2. Start the Frontend Dashboard
+In a separate terminal:
+```bash
+cd frontend
+npm install
+npm run dev
+```
+Open your browser at `http://localhost:5173`. The Vite development server automatically proxies `/api` requests to `http://127.0.0.1:8000`.
+
+### Frontend Configuration
+Configuration is managed via environment variables. Copy `frontend/.env.example` to `frontend/.env`:
+```bash
+# Optional: override the default /api/v1 proxy target
+VITE_API_BASE_URL=http://127.0.0.1:8000/api/v1
+```
+
+### Building for Production
+```bash
+cd frontend
+npm run build
+npm run preview  # Preview the production build locally
+```
+
+### Dashboard Features & Pages
+- **System Overview:** Real KPI cards, execution outcome breakdown (donut chart), and chronological activity trends (area chart).
+- **Execution History:** Searchable, status-filtered history table with duration, tool call statistics, pagination, and synchronous "Execute Agent" launcher.
+- **Trace Explorer:** Ordered telemetry timeline, component filtering, duration tracking, expandable metadata, and sanitized error diagnostics.
+- **Failure Intelligence:** Root-cause analysis distinguishing deterministic rule diagnoses from predictive ML risk scores, pattern severity detection, and raw telemetry evidence.
+- **Recommendations:** Actionable mitigation strategies with risk classification and approval gates. *(Note: Guarded Recovery execution is deliberately deferred; recommendations are strictly informational).*
+
+### Dashboard API Endpoints
+- `GET /api/v1/executions/history?limit=20&offset=0&status=&query=`: Paginated execution summaries.
+- `GET /api/v1/executions/overview`: Aggregated KPIs, outcome distributions, and activity trends.
+
 ```bash
 python -m pip install -e '.[dev,api]'
 uvicorn agentguard.api.main:create_app --factory --host 127.0.0.1 --port 8000

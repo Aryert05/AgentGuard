@@ -8,9 +8,12 @@ from fastapi import APIRouter, Depends, Query, status
 from agentguard.api.dependencies import get_execution_service, get_trace_service
 from agentguard.api.schemas.execution import (
     ExecutionEventsResponse,
+    ExecutionListResponse,
     ExecutionRequest,
     ExecutionResponse,
+    ExecutionStatus,
     ExecutionSummaryResponse,
+    OverviewMetricsResponse,
 )
 from agentguard.application.execution_service import ExecutionService
 from agentguard.application.trace_service import TraceService
@@ -34,6 +37,39 @@ def submit_execution(
     service: ExecutionService = Depends(get_execution_service),
 ) -> ExecutionResponse:
     return service.run(request)
+
+
+@router.get(
+    "/history",
+    response_model=ExecutionListResponse,
+    summary="List persisted executions",
+    description="Returns a paginated list of persisted execution summaries with optional status and search filters.",
+)
+def list_executions(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    status: ExecutionStatus | None = Query(default=None),
+    query: str | None = Query(default=None),
+    service: TraceService = Depends(get_trace_service),
+) -> ExecutionListResponse:
+    return service.list_executions(
+        limit=limit,
+        offset=offset,
+        status=status,
+        query=query,
+    )
+
+
+@router.get(
+    "/overview",
+    response_model=OverviewMetricsResponse,
+    summary="Get execution overview metrics",
+    description="Returns aggregate execution statistics and outcomes distribution.",
+)
+def get_overview_metrics(
+    service: TraceService = Depends(get_trace_service),
+) -> OverviewMetricsResponse:
+    return service.get_overview_metrics()
 
 
 @router.get(

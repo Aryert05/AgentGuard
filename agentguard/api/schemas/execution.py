@@ -90,3 +90,35 @@ class ExecutionEventsResponse(BaseModel):
     execution_id: str
     events: list[ExecutionEventResponse]
     next_after_event_index: int | None
+
+
+class ExecutionListResponse(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: list[ExecutionSummaryResponse]
+
+
+class ActivityBucket(BaseModel):
+    date: str
+    total: int
+    successful: int
+    failed: int
+
+
+class OverviewMetricsResponse(BaseModel):
+    total_executions: int
+    successful_executions: int
+    failed_executions: int
+    partially_completed_executions: int
+    running_executions: int
+    pending_executions: int
+    success_rate: float
+    failure_rate: float
+    avg_duration_ms: float | None
+    total_tool_calls: int
+    successful_tool_call_count: int
+    failed_tool_call_count: int
+    status_distribution: dict[str, int]
+    failure_category_distribution: dict[str, int]
+    recent_activity: list[ActivityBucket]
