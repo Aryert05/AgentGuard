@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from agentguard.api.config import ApiSettings
 from agentguard.api.dependencies import AppServices
@@ -91,6 +92,14 @@ def create_app(
                 "description": "Application liveness and future readiness checks.",
             }
         ],
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["X-Request-ID"],
     )
     app.add_middleware(RequestIdMiddleware)
     install_exception_handlers(app)

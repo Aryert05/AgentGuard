@@ -33,6 +33,19 @@ class TraceReader(Protocol):
     ) -> dict[str, Any] | None:
         """Return a bounded event page or None when the execution is unknown."""
 
+    def list_executions(
+        self,
+        *,
+        limit: int,
+        offset: int,
+        status: str | None = None,
+        query: str | None = None,
+    ) -> dict[str, Any]:
+        """Return a paginated list of persisted execution summaries and total count."""
+
+    def get_overview_metrics(self) -> dict[str, Any]:
+        """Return aggregate execution metrics across persisted executions."""
+
 
 class TraceWriter(Protocol):
     def persist(self, state: ExecutionState, events: EventCollector) -> None:

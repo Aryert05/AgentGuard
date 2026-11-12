@@ -14,8 +14,10 @@ from agentguard.application.errors import (
 )
 from agentguard.application.protocols import TraceReader
 from agentguard.database.repositories import (
+    list_execution_summaries,
     retrieve_execution_events,
     retrieve_execution_trace,
+    retrieve_overview_metrics,
 )
 from agentguard.telemetry.privacy import redact_metadata, redact_text
 
@@ -106,6 +108,59 @@ class TraceService:
             next_after_event_index=page.get("next_after_event_index"),
         )
 
+    def list_executions(
+        self,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+        status: str | None = None,
+        query: str | None = None,
+    ) -> ExecutionListResponse:
+        from agentguard.api.schemas.execution import (
+            ExecutionListResponse,
+            ExecutionSummaryResponse,
+        )
+
+        if not self.persistence_enabled:
+            raise PersistenceNotConfiguredError()
+        res = self.reader.list_executions(
+            limit=limit, offset=offset, status=status, query=query
+        )
+        items = [
+            ExecutionSummaryResponse(
+                execution_id=item["execution_id"],
+                task_id=item["task_id"],
+                task_description=redact_text(item.get("task_description")),
+                status=item["execution_status"],
+                mode=item["execution_mode"],
+                started_at=item["started_at"],
+                completed_at=item.get("completed_at"),
+                duration_ms=item.get("total_duration_ms"),
+                successful_tool_call_count=int(
+                    item.get("successful_tool_call_count") or 0
+                ),
+                failed_tool_call_count=int(
+                    item.get("failed_tool_call_count") or 0
+                ),
+                metadata=redact_metadata(item.get("metadata") or {}),
+            )
+            for item in res["items"]
+        ]
+        return ExecutionListResponse(
+            total=res["total"],
+            limit=res["limit"],
+            offset=res["offset"],
+            items=items,
+        )
+
+    def get_overview_metrics(self) -> OverviewMetricsResponse:
+        from agentguard.api.schemas.execution import OverviewMetricsResponse
+
+        if not self.persistence_enabled:
+            raise PersistenceNotConfiguredError()
+        data = self.reader.get_overview_metrics()
+        return OverviewMetricsResponse.model_validate(data)
+
 
 class DatabaseTraceReader:
     """Read-only adapter over the existing PostgreSQL repository functions."""
@@ -146,6 +201,31 @@ class DatabaseTraceReader:
                 type(exc).__name__,
                 extra={"execution_id": execution_id},
             )
+            raise PersistenceUnavailableError() from None
+
+    def list_executions(
+        self,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+        status: str | None = None,
+        query: str | None = None,
+    ) -> dict[str, Any]:
+        factory = self._session_factory()
+        try:
+            return list_execution_summaries(
+                factory, limit=limit, offset=offset, status=status, query=query
+            )
+        except SQLAlchemyError as exc:
+            LOGGER.error("Execution list failed (%s)", type(exc).__name__)
+            raise PersistenceUnavailableError() from None
+
+    def get_overview_metrics(self) -> dict[str, Any]:
+        factory = self._session_factory()
+        try:
+            return retrieve_overview_metrics(factory)
+        except SQLAlchemyError as exc:
+            LOGGER.error("Overview metrics failed (%s)", type(exc).__name__)
             raise PersistenceUnavailableError() from None
 
     def _session_factory(self) -> sessionmaker[Session]:

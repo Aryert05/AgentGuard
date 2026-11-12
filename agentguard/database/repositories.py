@@ -6,7 +6,7 @@ import math
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -207,6 +207,156 @@ def retrieve_execution_events(
             "next_after_event_index": (
                 page[-1].event_index if has_more and page else None
             ),
+        }
+
+
+def list_execution_summaries(
+    session_factory: sessionmaker[Session],
+    *,
+    limit: int = 20,
+    offset: int = 0,
+    status: str | None = None,
+    query: str | None = None,
+) -> dict[str, Any]:
+    """Return a paginated list of execution summaries and total count."""
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    if offset < 0:
+        raise ValueError("offset must be non-negative")
+    with session_factory() as session:
+        stmt = select(ExecutionRecord)
+        if status:
+            stmt = stmt.where(ExecutionRecord.execution_status == status)
+        if query and query.strip():
+            term = f"%{query.strip()}%"
+            stmt = stmt.where(
+                or_(
+                    ExecutionRecord.execution_id.ilike(term),
+                    ExecutionRecord.task_id.ilike(term),
+                    ExecutionRecord.task_description.ilike(term),
+                )
+            )
+        total_stmt = select(func.count()).select_from(stmt.subquery())
+        total = session.scalar(total_stmt) or 0
+
+        paged_stmt = stmt.order_by(ExecutionRecord.started_at.desc()).offset(offset).limit(limit)
+        records = session.scalars(paged_stmt).all()
+        items = [
+            {
+                "execution_id": r.execution_id,
+                "task_id": r.task_id,
+                "task_description": r.task_description,
+                "execution_status": r.execution_status,
+                "execution_mode": r.execution_mode,
+                "started_at": r.started_at,
+                "completed_at": r.completed_at,
+                "total_duration_ms": r.total_duration_ms,
+                "successful_tool_call_count": r.successful_tool_call_count,
+                "failed_tool_call_count": r.failed_tool_call_count,
+                "metadata": r.metadata_json,
+            }
+            for r in records
+        ]
+        return {
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "items": items,
+        }
+
+
+def retrieve_overview_metrics(
+    session_factory: sessionmaker[Session],
+) -> dict[str, Any]:
+    """Return aggregate statistics across persisted executions."""
+    with session_factory() as session:
+        status_stmt = select(
+            ExecutionRecord.execution_status, func.count(ExecutionRecord.execution_id)
+        ).group_by(ExecutionRecord.execution_status)
+        status_rows = session.execute(status_stmt).all()
+        status_dist = {str(status): int(count) for status, count in status_rows}
+
+        total = sum(status_dist.values())
+        successful = status_dist.get("completed", 0)
+        failed = status_dist.get("failed", 0)
+        partially_completed = status_dist.get("partially_completed", 0)
+        running = status_dist.get("running", 0)
+        pending = status_dist.get("pending", 0)
+
+        success_rate = (successful / total) if total > 0 else 0.0
+        failure_rate = ((failed + partially_completed) / total) if total > 0 else 0.0
+
+        agg_stmt = select(
+            func.sum(ExecutionRecord.successful_tool_call_count),
+            func.sum(ExecutionRecord.failed_tool_call_count),
+            func.avg(ExecutionRecord.total_duration_ms),
+        )
+        agg_res = session.execute(agg_stmt).one_or_none()
+        successful_tools = int(agg_res[0] or 0) if agg_res else 0
+        failed_tools = int(agg_res[1] or 0) if agg_res else 0
+        avg_duration = float(agg_res[2]) if agg_res and agg_res[2] is not None else None
+
+        failure_cat_dist: dict[str, int] = {}
+        try:
+            recovery_stmt = select(
+                RecoverySessionRecord.diagnosis_category,
+                func.count(RecoverySessionRecord.session_id),
+            ).where(RecoverySessionRecord.is_failure == True).group_by(RecoverySessionRecord.diagnosis_category)
+            recovery_rows = session.execute(recovery_stmt).all()
+            failure_cat_dist = {str(cat): int(count) for cat, count in recovery_rows if cat}
+        except Exception:
+            pass
+
+        if not failure_cat_dist:
+            try:
+                event_err_stmt = select(
+                    ExecutionEventRecord.error_type,
+                    func.count(ExecutionEventRecord.event_id),
+                ).where(
+                    ExecutionEventRecord.error_type.isnot(None)
+                ).group_by(ExecutionEventRecord.error_type)
+                event_err_rows = session.execute(event_err_stmt).all()
+                failure_cat_dist = {str(err): int(count) for err, count in event_err_rows if err}
+            except Exception:
+                pass
+
+        recent_stmt = select(
+            ExecutionRecord.started_at,
+            ExecutionRecord.execution_status,
+        ).order_by(ExecutionRecord.started_at.desc()).limit(100)
+        recent_records = session.execute(recent_stmt).all()
+
+        buckets: dict[str, dict[str, Any]] = {}
+        for row in reversed(recent_records):
+            ts: datetime = row[0]
+            status_val = str(row[1])
+            date_key = ts.strftime("%Y-%m-%d")
+            if date_key not in buckets:
+                buckets[date_key] = {"date": date_key, "total": 0, "successful": 0, "failed": 0}
+            buckets[date_key]["total"] += 1
+            if status_val == "completed":
+                buckets[date_key]["successful"] += 1
+            elif status_val in ("failed", "partially_completed"):
+                buckets[date_key]["failed"] += 1
+
+        recent_activity = list(buckets.values())
+
+        return {
+            "total_executions": total,
+            "successful_executions": successful,
+            "failed_executions": failed,
+            "partially_completed_executions": partially_completed,
+            "running_executions": running,
+            "pending_executions": pending,
+            "success_rate": round(success_rate, 4),
+            "failure_rate": round(failure_rate, 4),
+            "avg_duration_ms": round(avg_duration, 2) if avg_duration is not None else None,
+            "total_tool_calls": successful_tools + failed_tools,
+            "successful_tool_call_count": successful_tools,
+            "failed_tool_call_count": failed_tools,
+            "status_distribution": status_dist,
+            "failure_category_distribution": failure_cat_dist,
+            "recent_activity": recent_activity,
         }
 
 
