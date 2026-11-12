@@ -1,20 +1,106 @@
+name: agentguard-deployment
+
 services:
   postgres:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-agentguard}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-this-local-password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-agentguard}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+      AGENTGUARD_MIGRATION_PASSWORD: ${AGENTGUARD_MIGRATION_PASSWORD:?Set AGENTGUARD_MIGRATION_PASSWORD in .env}
+      AGENTGUARD_APP_PASSWORD: ${AGENTGUARD_APP_PASSWORD:?Set AGENTGUARD_APP_PASSWORD in .env}
     ports:
-      # Publish only on loopback; avoid colliding with native PostgreSQL on 5432.
-      - "127.0.0.1:${POSTGRES_HOST_PORT:-5433}:5432"
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5434}:5432"
     volumes:
-      - agentguard-postgres:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/01-init-roles.sh:/docker-entrypoint-initdb.d/01-init-roles.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agentguard} -d ${POSTGRES_DB:-agentguard}"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 3s
       timeout: 3s
       retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command:
+      - sh
+      - -c
+      - alembic upgrade head && python scripts/grant_runtime_privileges.py
+    environment:
+      AGENTGUARD_MIGRATION_DATABASE_URL: "postgresql+psycopg://agentguard_migrator:${AGENTGUARD_MIGRATION_PASSWORD:?Set AGENTGUARD_MIGRATION_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-agentguard}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      AGENTGUARD_API_ENVIRONMENT: production
+      AGENTGUARD_CORS_ORIGINS: ${AGENTGUARD_CORS_ORIGINS:-}
+      AGENTGUARD_DATABASE_URL: "postgresql+psycopg://agentguard_app:${AGENTGUARD_APP_PASSWORD:?Set AGENTGUARD_APP_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-agentguard}"
+      AGENTGUARD_STORE_TASK_TEXT: ${AGENTGUARD_STORE_TASK_TEXT:-false}
+      AGENTGUARD_LLM_PROVIDER: ${AGENTGUARD_LLM_PROVIDER:-}
+      AGENTGUARD_LLM_MODEL: ${AGENTGUARD_LLM_MODEL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    expose:
+      - "8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=2)"
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 20s
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /api/v1
+    ports:
+      - "127.0.0.1:${AGENTGUARD_HTTP_PORT:-8081}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+      - /var/cache/nginx:rw,noexec,nosuid,size=16m,uid=101,gid=101,mode=0755
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
 volumes:
-  agentguard-postgres:
+  postgres_data:

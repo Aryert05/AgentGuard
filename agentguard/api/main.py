@@ -93,14 +93,15 @@ def create_app(
             }
         ],
     )
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-        expose_headers=["X-Request-ID"],
-    )
+    if api_settings.cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(api_settings.cors_origins),
+            allow_credentials=False,
+            allow_methods=["GET", "POST"],
+            allow_headers=["Accept", "Content-Type", "X-Request-ID"],
+            expose_headers=["X-Request-ID"],
+        )
     app.add_middleware(RequestIdMiddleware)
     install_exception_handlers(app)
     app.include_router(build_api_router(), prefix=API_V1_PREFIX)
