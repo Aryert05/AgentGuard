@@ -101,6 +101,12 @@ docker compose down
 
 `docker compose down` retains the named PostgreSQL data volume. Back up that volume/database before upgrades and do not delete it to troubleshoot deployment issues. Use a new, explicitly selected Compose project and volume for disposable verification rather than reusing a personal or production database.
 
+#### Existing PostgreSQL data
+
+The Compose file sets the default project name to `agentguard-deployment` and declares the volume key `postgres_data`. With the default project name, Docker Compose creates the `agentguard-deployment_postgres_data` volume. A fresh deployment therefore uses a separate database volume. The previous Compose configuration declared the `agentguard-postgres` volume key; Compose scopes named volumes by project, so its physical Docker volume name includes that previous project prefix (for example, `agentguard_agentguard-postgres` when the project name was `agentguard`).
+
+The new stack does not automatically attach to, copy, migrate, or delete the old volume. Telemetry stored there will not appear in the new deployment unless you deliberately reuse that exact physical volume or migrate the database with a safe backup and restore. To reuse it, identify the actual volume name and explicitly configure it as an external Compose volume; verify the PostgreSQL version, database, roles, privileges, and Alembic revision first, because initialization scripts only run for an empty data directory. Otherwise, make and verify a database backup and restore it into the new database. Do not rename or delete the old volume to force reuse. The previous volume remains available until an operator deliberately removes it.
+
 ### Production boundary
 
 This Compose deployment binds the web entry point and PostgreSQL to loopback by default. It does not provide user authentication, TLS termination, rate limiting, or a multi-tenant authorization layer. Do not publish it directly to the Internet. A public deployment must place it behind a trusted gateway that supplies authentication, TLS, rate limits, and an appropriate request/access-log policy. Store production credentials in a deployment secret manager, not a checked-in file. `AGENTGUARD_CORS_ORIGINS` accepts an explicit comma-separated list of exact HTTP(S) origins; production has no cross-origin allowance by default, and credentialed CORS is disabled.

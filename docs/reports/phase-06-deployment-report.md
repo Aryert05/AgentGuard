@@ -35,4 +35,4 @@ The full-suite failure was caused by Alembic's default `fileConfig()` behavior d
 
 ## Cleanup and Git state
 
-The temporary Phase 6 Compose project and its temporary database volume were removed. The pre-existing AgentGuard PostgreSQL container and named volume were left intact. No Phase 6 files were staged, committed, pushed, or submitted as a PR. The pre-existing untracked `scripts/verify_runtime.mjs` was preserved unchanged.
+The temporary Phase 6 Compose project and its temporary database volume were removed. The pre-existing AgentGuard PostgreSQL container and named volume were left intact. **Historical Git-state snapshot from before Phase 6 Git delivery:** no Phase 6 files had yet been staged, committed, or pushed, and no PR had been submitted. Those files were subsequently committed as `2ed9bc995e72dd734a15cdadee13cfeeef00d373` and submitted in PR #4. The pre-existing untracked `scripts/verify_runtime.mjs` was preserved unchanged.
