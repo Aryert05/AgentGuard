@@ -1,194 +1,152 @@
 # AgentGuard
 
-AgentGuard provides an iterative tool-using agent, deterministic offline execution, and structured execution events. Phase 2 adds optional PostgreSQL telemetry persistence and a reproducible synthetic prefix dataset. In provider mode, LangGraph routes model messages through a bounded `ToolNode` loop; offline mode is deterministic and rule-based. See the [Phase 1 guide](docs/phase-01-agent-foundation.md) and [Phase 2 guide](docs/phase-02-telemetry-dataset.md).
+AgentGuard is an agent execution reliability project. It runs bounded tool-using tasks, records structured telemetry, diagnoses observed failures, and presents executions and traces in a dashboard. Deterministic mode works offline; provider-backed mode uses LangGraph and a configured chat model.
+
+The repository contains the completed work across six phases: agent foundations, telemetry and a synthetic AgentTrace dataset, leakage-aware ML experiments, diagnostics and bounded recovery primitives, a FastAPI API, and a React observability dashboard. The dashboard's recovery recommendations are informational. **Guarded Recovery is deferred and is not triggered by the API or dashboard.**
+
+## Architecture and technology
+
+| Layer | Technology | Responsibility |
+|---|---|---|
+| Agent runtime | Python 3.11+, LangGraph, Pydantic | Deterministic offline runs and bounded provider-backed tool execution |
+| API | FastAPI, Uvicorn | Versioned execution, trace, history, overview, diagnosis, and recommendation endpoints |
+| Persistence | PostgreSQL 16, SQLAlchemy, Alembic, psycopg 3 | Execution/event telemetry and recovery service telemetry schema |
+| Dashboard | React 18, TypeScript, Vite, Tailwind CSS, Recharts | Execution overview, history, event traces, diagnosis, and recommendations |
+| Deployment | Docker Compose, Nginx | API, migration job, database, and compiled frontend |
+| ML experiments | scikit-learn (optional), pandas, NumPy | Grouped synthetic-data baselines; no model is required to run the API |
+
+Execution events and API responses omit raw tool arguments/results and apply redaction to sensitive-looking text and metadata. The synthetic AgentTrace data is for pipeline experimentation, not a substitute for production observations or evidence of production model quality. See the [Phase 1 guide](docs/phase-01-agent-foundation.md), [Phase 2 guide](docs/phase-02-telemetry-dataset.md), [Phase 3 ML plan](docs/phase-03-ml-plan.md), and [Phase 4 API plan](docs/phase-04-api-integration-plan.md).
+
+## Capabilities
+
+- Execute deterministic offline tasks or bounded provider-backed agent runs.
+- Persist executions and ordered events to PostgreSQL through an atomic repository boundary.
+- Browse execution history, overview metrics, and bounded event pages.
+- Diagnose stateless or persisted event traces and return informational recommendations.
+- Explore leakage-aware ML experiments using execution-held-out splits; task-template-held-out results remain exploratory.
+- Use the single-tenant dashboard to inspect executions, traces, failure evidence, and recommendations.
+
+## Prerequisites
+
+- Python 3.11 or later.
+- Node.js 20 or later and npm for local frontend development (Docker builds the frontend otherwise).
+- Docker Engine and Docker Compose v2 for the complete container deployment.
+- PostgreSQL is optional for offline development and required for persisted history and traces.
+
+## Local development
+
+### 1. Install and run the API
 
 ```bash
-python -m pip install -e .
-python -m agentguard --demo "Calculate the total cost of 15 products priced at 250 each"
-python -m agentguard --demo "Find information about Tata Motors and summarize the available company data"
-```
-
-## Phase 4 API
-
-Phase 4.1 adds a FastAPI application factory with versioned routes under `/api/v1`. Phase 4.2 adds synchronous agent execution and persisted trace retrieval, Phase 4.3 adds diagnosis and informational recovery recommendations, and Phase 4.4 integrates PostgreSQL persistence and retrieval. Phase 4.5 adds cross-component end-to-end regression coverage and hardening. Execution submission uses the existing `run_agent` path; it does not introduce a second agent implementation. Recommendations remain informational: the API does not execute recovery actions.
-
-## Phase 5: Observability Dashboard
-
-AgentGuard includes a modern React/TypeScript dashboard located in `frontend/`. It communicates with the FastAPI backend to provide real-time execution statistics, historical traces, ordered event timelines, root-cause failure intelligence, and informational recommendations.
-
-### Prerequisites
-
-- Node.js >= 18 (Node 20+ recommended)
-- Python 3.11+ with `.[api]` dependencies installed
-
-### Running the Full Application
-
-#### 1. Start the FastAPI Backend
-```bash
+python -m venv .venv
+. .venv/bin/activate
 python -m pip install -e '.[dev,api]'
 uvicorn agentguard.api.main:create_app --factory --host 127.0.0.1 --port 8000 --reload
 ```
-The API is served at `http://127.0.0.1:8000`. Swagger documentation is accessible at `http://127.0.0.1:8000/docs`.
 
-#### 2. Start the Frontend Dashboard
-In a separate terminal:
+Without a database URL, deterministic execution and stateless diagnosis remain available. Persistent history/trace routes report that persistence is not configured. Interactive API docs are available at `http://127.0.0.1:8000/docs` in development.
+
+### 2. Run the dashboard
+
+In a second terminal:
+
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
-Open your browser at `http://localhost:5173`. The Vite development server automatically proxies `/api` requests to `http://127.0.0.1:8000`.
 
-### Frontend Configuration
-Configuration is managed via environment variables. Copy `frontend/.env.example` to `frontend/.env`:
+Open `http://localhost:5173`. Vite proxies `/api` to the local API. The default frontend API base is `/api/v1`; no browser-visible secret is needed.
+
+### 3. Optional local PostgreSQL
+
+Copy the environment template, generate three distinct URL-safe passwords, and put them in `POSTGRES_PASSWORD`, `AGENTGUARD_MIGRATION_PASSWORD`, and `AGENTGUARD_APP_PASSWORD` in `.env`. For example, generate each value with `openssl rand -hex 32`; do not commit `.env`.
+
 ```bash
-# Optional: override the default /api/v1 proxy target
-VITE_API_BASE_URL=http://127.0.0.1:8000/api/v1
+cp .env.example .env
+docker compose up -d postgres
 ```
 
-### Building for Production
+The local database listens on `127.0.0.1:5434` by default. For a host-run API, set `AGENTGUARD_MIGRATION_DATABASE_URL` and `AGENTGUARD_DATABASE_URL` to the migration and runtime roles at `127.0.0.1:${POSTGRES_HOST_PORT}`. Use the URL-safe password values from `.env`. Then run the migration with the migration role:
+
 ```bash
-cd frontend
-npm run build
-npm run preview  # Preview the production build locally
+.venv/bin/alembic upgrade head
+python scripts/grant_runtime_privileges.py
 ```
 
-### Dashboard Features & Pages
-- **System Overview:** Real KPI cards, execution outcome breakdown (donut chart), and chronological activity trends (area chart).
-- **Execution History:** Searchable, status-filtered history table with duration, tool call statistics, pagination, and synchronous "Execute Agent" launcher.
-- **Trace Explorer:** Ordered telemetry timeline, component filtering, duration tracking, expandable metadata, and sanitized error diagnostics.
-- **Failure Intelligence:** Root-cause analysis distinguishing deterministic rule diagnoses from predictive ML risk scores, pattern severity detection, and raw telemetry evidence.
-- **Recommendations:** Actionable mitigation strategies with risk classification and approval gates. *(Note: Guarded Recovery execution is deliberately deferred; recommendations are strictly informational).*
+The bootstrap role is used only to initialize PostgreSQL and create the two application roles. Alembic uses `agentguard_migrator`; the API uses the restricted `agentguard_app` role. The grant script gives the app only the table operations used by the repositories. On an existing database volume, initialization scripts do not run again; review the existing roles before using it. Never use `docker compose down -v` to troubleshoot credentials or migrations.
 
-### Dashboard API Endpoints
-- `GET /api/v1/executions/history?limit=20&offset=0&status=&query=`: Paginated execution summaries.
-- `GET /api/v1/executions/overview`: Aggregated KPIs, outcome distributions, and activity trends.
+## Docker Compose deployment
+
+The Compose stack builds a multi-stage Python API image and a multi-stage React frontend image, then runs PostgreSQL, a one-shot migration/grant job, the API, and Nginx. The browser talks to Nginx at one origin; Nginx proxies `/api/` to FastAPI. The default HTTP port is `127.0.0.1:8081`, and PostgreSQL is loopback-only on `127.0.0.1:5434`.
+
+```bash
+cp .env.example .env
+# Set distinct values for POSTGRES_PASSWORD, AGENTGUARD_MIGRATION_PASSWORD,
+# and AGENTGUARD_APP_PASSWORD. `openssl rand -hex 32` creates URL-safe values.
+docker compose config --quiet
+docker compose up --build -d
+docker compose ps
+curl http://127.0.0.1:8081/api/v1/health
+```
+
+Compose initializes separate bootstrap, migration, and runtime identities on a fresh volume. The migration service waits for PostgreSQL health, applies `alembic upgrade head`, and grants the runtime role the exact application table permissions. The API waits for that job to succeed, and the frontend waits for API health. A failed migration prevents API startup. API docs default off in the production Compose environment.
+
+View logs and stop the services with:
+
+```bash
+docker compose logs -f postgres migrate api web
+docker compose down
+```
+
+`docker compose down` retains the named PostgreSQL data volume. Back up that volume/database before upgrades and do not delete it to troubleshoot deployment issues. Use a new, explicitly selected Compose project and volume for disposable verification rather than reusing a personal or production database.
+
+#### Existing PostgreSQL data
+
+The Compose file sets the default project name to `agentguard-deployment` and declares the volume key `postgres_data`. With the default project name, Docker Compose creates the `agentguard-deployment_postgres_data` volume. A fresh deployment therefore uses a separate database volume. The previous Compose configuration declared the `agentguard-postgres` volume key; Compose scopes named volumes by project, so its physical Docker volume name includes that previous project prefix (for example, `agentguard_agentguard-postgres` when the project name was `agentguard`).
+
+The new stack does not automatically attach to, copy, migrate, or delete the old volume. Telemetry stored there will not appear in the new deployment unless you deliberately reuse that exact physical volume or migrate the database with a safe backup and restore. To reuse it, identify the actual volume name and explicitly configure it as an external Compose volume; verify the PostgreSQL version, database, roles, privileges, and Alembic revision first, because initialization scripts only run for an empty data directory. Otherwise, make and verify a database backup and restore it into the new database. Do not rename or delete the old volume to force reuse. The previous volume remains available until an operator deliberately removes it.
+
+### Production boundary
+
+This Compose deployment binds the web entry point and PostgreSQL to loopback by default. It does not provide user authentication, TLS termination, rate limiting, or a multi-tenant authorization layer. Do not publish it directly to the Internet. A public deployment must place it behind a trusted gateway that supplies authentication, TLS, rate limits, and an appropriate request/access-log policy. Store production credentials in a deployment secret manager, not a checked-in file. `AGENTGUARD_CORS_ORIGINS` accepts an explicit comma-separated list of exact HTTP(S) origins; production has no cross-origin allowance by default, and credentialed CORS is disabled.
+
+## API reference
+
+The API is versioned under `/api/v1`:
+
+| Method | Route | Purpose |
+|---|---|---|
+| `GET` | `/health` | Application liveness; deliberately does not claim database readiness |
+| `POST` | `/executions` | Synchronous bounded agent execution |
+| `GET` | `/executions/history` | Filtered, paginated persisted execution summaries |
+| `GET` | `/executions/overview` | Persisted execution metrics |
+| `GET` | `/executions/{id}` | Persisted execution summary |
+| `GET` | `/executions/{id}/events` | Ordered bounded event pages |
+| `POST` | `/diagnoses` | Stateless event-prefix diagnosis and recommendations |
+| `POST` | `/executions/{id}/diagnoses` | Diagnosis of a persisted trace |
+
+`POST /executions` is synchronous and non-idempotent; do not retry it automatically. Agent-level `failed` or `partially_completed` results still return `201`; inspect the response status. When persistence is disabled, executions return `persisted=false`, while history and trace routes return a stable `503`. Tasks are bounded to 8,000 characters, tool calls to 1–8, and event pages to 1–500 records. Public responses do not include raw tool arguments, results, or internal state.
+
+Interactive OpenAPI docs are enabled by default only in `development`, `local`, and `test`. For local API work, use `http://127.0.0.1:8000/docs`. In Compose, the API environment is `production`, so `/docs` and `/openapi.json` remain disabled unless deliberately reconfigured for controlled use.
+
+## Screenshots
+
+Screenshots are not included yet. Replace these placeholders with reviewed captures before using them in a portfolio presentation:
+
+- `[Screenshot placeholder: System Overview dashboard]`
+- `[Screenshot placeholder: Execution History and Trace Explorer]`
+- `[Screenshot placeholder: Failure Intelligence and Recommendations]`
+
+## Tests and ML experiments
+
+Run the offline suite with:
 
 ```bash
 python -m pip install -e '.[dev,api]'
-uvicorn agentguard.api.main:create_app --factory --host 127.0.0.1 --port 8000
-curl http://127.0.0.1:8000/api/v1/health
-
-curl -X POST http://127.0.0.1:8000/api/v1/executions \
-  -H 'Content-Type: application/json' \
-  -d '{"task":"Calculate the total cost of 15 products priced at 250 each","mode":"deterministic","max_tool_calls":8}'
-
-curl http://127.0.0.1:8000/api/v1/executions/<execution_id>
-curl 'http://127.0.0.1:8000/api/v1/executions/<execution_id>/events?limit=100'
-
-python -m pytest tests/unit/test_phase41_api.py tests/unit/test_phase42_api.py tests/unit/test_phase43_api.py tests/unit/test_phase45_api.py
-```
-
-`POST /api/v1/executions` is synchronous and non-idempotent; do not retry it automatically. Agent-level `failed` or `partially_completed` results still return `201`; inspect `status`. When persistence is disabled, execution returns `persisted=false` and the summary/event routes return `503 persistence_not_configured`. LLM mode without a configured provider and model returns `503 llm_not_configured`. Requests are bounded to an 8,000-character task and `max_tool_calls` `1..8`; event pages accept `limit` `1..500` and the `event_index` cursor. Public responses omit messages, raw tool arguments/results, internal state, and secrets.
-
-When `AGENTGUARD_DATABASE_URL` (or the legacy `DATABASE_URL`) is configured, the API creates one SQLAlchemy session factory during startup and shares it between execution persistence and trace retrieval; it disposes the engine at shutdown. The API calls the existing agent runtime with runtime-owned persistence disabled, then writes the returned execution and events once through the Phase 2 repository transaction. `persisted=true` is returned only after that transaction commits. Database failures return `503 persistence_unavailable`; execution is not retried. With no database URL, no engine is created and offline execution remains available. Apply schema changes separately using `AGENTGUARD_MIGRATION_DATABASE_URL` and `alembic upgrade head`; runtime credentials retain the Phase 2 least-privilege grants.
-
-### Diagnosis and recommendations
-
-`POST /api/v1/diagnoses` accepts `{"events": [...]}` and returns the Phase 3.4 diagnosis plus informational recovery recommendations. Events use the existing `ExecutionEvent` schema and prefix validation. The request can contain at most 1,000 events; an empty list is valid. `POST /api/v1/executions/{execution_id}/diagnoses` diagnoses a persisted event prefix using a bounded, ordered read of at most 1,000 events. It returns `404 execution_not_found` for an unknown execution, `503 persistence_unavailable` when persistence is disabled or unavailable, and `413 diagnosis_trace_too_large` if the stored trace exceeds that cap.
-
-Both routes reuse `DiagnosticService.analyze` and return API-specific response schemas. Clients cannot provide `ml_signal`; an optional scorer can be injected server-side through `create_app(ml_scorer=...)`. If scoring fails, rule-based diagnosis is returned with a generic `ml_error`; internal exception details are not exposed. Recommendations are informational only: these routes do not execute tools, invoke recovery controllers/executors, or persist diagnoses or recovery sessions.
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/v1/diagnoses \
-  -H 'Content-Type: application/json' \
-  -d '{"events":[{"event_id":"evt-1","execution_id":"exec-1","task_id":"task-1","step_number":0,"timestamp":"2026-11-02T10:00:00Z","event_type":"execution_started","component":"agent","status":"running","metadata":{}}]}'
-
-curl -X POST http://127.0.0.1:8000/api/v1/executions/<execution_id>/diagnoses
-```
-
-The response contains `diagnosis`, `recommendations`, and nullable `ml_error`. Structurally invalid events use the standard `422 validation_error`; semantically invalid prefixes return `422 invalid_diagnosis_prefix`. See the [Phase 4.3 diagnosis report](docs/reports/phase-04-3-diagnosis-recommendations-report.md), [Phase 4.4 PostgreSQL report](docs/reports/phase-04-4-postgresql-integration-report.md), and [Phase 4.5 end-to-end report](docs/reports/phase-04-5-end-to-end-testing-report.md) for implementation details and verification limits.
-
-Interactive docs are available at `http://127.0.0.1:8000/docs` when enabled. Docs default on in `development`, `local`, and `test`, and off in `staging` and `production`, including direct `ApiSettings` construction. Enabling docs in staging or production is a deliberate override: set `AGENTGUARD_API_DOCS_ENABLED=true` only for controlled use, or pass `docs_enabled=True` to `ApiSettings` when constructing the app directly. `AGENTGUARD_API_ENVIRONMENT` validates the environment label reported by `/api/v1/health`. The liveness endpoint deliberately does not check PostgreSQL or any other external dependency. The API is intended for local, single-tenant use; authentication, rate limiting, and body-size middleware remain deployment requirements before public exposure.
-
-For development and tests, install the development extra. Phase 3 ML preparation tests and sklearn preprocessing additionally require the optional ML extra:
-
-```bash
-python -m pip install -e '.[dev]'
 python -m pytest
-
-# Phase 3.2 data preparation, split, and sklearn preprocessing work/tests
-python -m pip install -e '.[dev,ml]'
-python -m pytest tests/unit/test_phase3_data.py tests/unit/test_phase3_splitting.py tests/unit/test_phase3_preprocessing.py
-
-# Phase 3.3 train-only fitting, grouped analysis, and validation-only threshold selection
-python -m pytest tests/unit/test_phase3_evaluation.py tests/unit/test_phase3_training.py tests/unit/test_phase3_analysis.py
-python -m agentguard.ml.train --strategy execution_held_out
-python -m agentguard.ml.train --strategy task_template_held_out
 ```
 
-The base `agentguard.ml.data` loader and group-splitting utilities do not import scikit-learn. Importing or using ML models and preprocessing requires the `ml` extra. Use `fit_transform_partitions` for AgentTrace data so the dataset/split binding is checked before preprocessing; `build_preprocessing_pipeline` is a raw sklearn pipeline factory and cannot enforce split provenance when fitted directly. The Phase 3.3 commands train baselines on grouped training partitions, select thresholds on validation data, and write JSON artifacts under the ignored `data/generated/` directory. The execution-held-out run is primary; the task-template-held-out run is exploratory. Both include execution/template-balanced metrics, cluster-bootstrap intervals, and prefix/time strata, write a SHA-256 sidecar, and record source-file/code-snapshot provenance. They do not score the test partitions or save model binaries. Results are preliminary and use a small synthetic dataset.
+PostgreSQL integration tests require a separate disposable database and both runtime and migration test URLs; never point them at a valuable database. The optional ML preparation/training tools require `python -m pip install -e '.[dev,ml]'`. Phase 3 evaluation uses grouped execution splits as the primary estimate and template-held-out splits only as exploratory analysis. Final test partitions are not scored in the documented baseline runs. Generated datasets and analysis output are ignored by Git.
 
-Phase 3.4 exposes deterministic diagnosis and bounded recovery interfaces in `agentguard.diagnostics`. Call `DiagnosticService.analyze(events, ml_signal=...)` with an observed event prefix to get evidence and recommendations. `DiagnosticRecoveryService` can pass a recommendation to a caller-supplied one-action executor under `RecoveryPolicy` limits. Approval-gated/high-risk actions are returned without execution. The default in-memory attempt ledger belongs to one controller; inject one shared `InMemoryRecoveryAttemptLedger` instance to coordinate controllers in one process. For durable cross-process and restart-safe enforcement, provide the same `DatabaseRecoveryTelemetry(session_factory)` as both the controller's telemetry sink and attempt ledger; database concurrency has not been verified in this project environment. Migration `0002_recovery_telemetry` adds session, attempt, and budget tables. This is a Python service boundary: the agent runtime does not automatically launch recovery.
-
-After applying migration `0002_recovery_telemetry`, grant the restricted runtime role only the recovery-table permissions needed by the persistence repository:
-
-```sql
-GRANT SELECT, INSERT, UPDATE ON TABLE recovery_sessions TO agentguard_app;
-GRANT SELECT, INSERT ON TABLE recovery_attempts TO agentguard_app;
-GRANT SELECT, INSERT, UPDATE ON TABLE recovery_attempt_budgets TO agentguard_app;
-```
-
-## Phase 2: PostgreSQL telemetry and AgentTrace
-
-Install PostgreSQL support with the project dependencies. Copy `.env.example` to `.env` and replace the local placeholders; `.env` is ignored by Git. AgentGuard uses three distinct identities: `POSTGRES_USER` / `AGENTGUARD_BOOTSTRAP_DATABASE_URL` for local bootstrap and role administration, `AGENTGUARD_MIGRATION_DATABASE_URL` for Alembic, and `AGENTGUARD_DATABASE_URL` for application runtime. Runtime persistence is disabled when `AGENTGUARD_DATABASE_URL` is unset; legacy `DATABASE_URL` remains a compatibility fallback. Task descriptions are omitted unless `AGENTGUARD_STORE_TASK_TEXT=true`.
-
-To start the local PostgreSQL 16 Compose service (host port `5433`, loopback only):
-
-```bash
-docker compose up -d postgres
-docker compose exec -it postgres sh -lc 'exec psql -U "$POSTGRES_USER" -d postgres'
-```
-
-In that bootstrap psql session, create the separate migration and runtime roles and set their passwords interactively:
-
-```sql
-CREATE ROLE agentguard_migrator LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
-\password agentguard_migrator
-CREATE ROLE agentguard_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
-\password agentguard_app
-GRANT CONNECT ON DATABASE agentguard TO agentguard_migrator, agentguard_app;
-\connect agentguard
-REVOKE TEMPORARY ON DATABASE agentguard FROM PUBLIC;
-REVOKE CREATE ON SCHEMA public FROM PUBLIC;
-ALTER SCHEMA public OWNER TO agentguard_migrator;
-GRANT USAGE ON SCHEMA public TO agentguard_app;
-```
-
-Set `AGENTGUARD_MIGRATION_DATABASE_URL` to the migration role and run `alembic upgrade head`. The migration role owns the `public` schema and tables it creates, but has no superuser, database-creation, or role-creation privilege. Then grant the runtime role only the application table operations:
-
-```sql
-GRANT SELECT, INSERT, UPDATE ON TABLE executions TO agentguard_app;
-GRANT SELECT, INSERT ON TABLE execution_events TO agentguard_app;
-```
-
-Run those grants as the migration role after migrations that add tables. The runtime role needs CONNECT and schema USAGE, but not TEMPORARY, table DELETE, event UPDATE, or schema CREATE. Revoking TEMPORARY from PUBLIC removes PostgreSQL's default effective TEMP privilege. If another local user needs temporary tables, grant TEMPORARY directly to that user rather than restoring it to PUBLIC.
-
-Compose publishes only on `127.0.0.1:5433` by default. Its named volume is preserved across container recreation; do not use `docker compose down -v` to fix credentials. For an existing volume, Compose's `POSTGRES_*` variables do not update roles/passwords initialized earlier. Connect using the administrator role already stored in the volume, inspect roles and ownership, and create only missing roles. Before revoking TEMPORARY from PUBLIC in a shared database, inspect other users and explicitly grant TEMPORARY to any that require it. To let the migration role update existing Phase 2 objects, grant it schema CREATE and transfer ownership of the inspected AgentGuard tables and `alembic_version`; do not implicitly change existing passwords or role attributes. Use psycopg v3 URLs and keep the host port aligned with `POSTGRES_HOST_PORT`. The application persists after execution; database errors are returned to the caller. See the Phase 2 guide for full existing-volume and isolated integration-test setup.
-
-Generate the controlled synthetic dataset and run EDA:
-
-```bash
-python -m agentguard.dataset.generator --executions 100 --seed 2026 --output data/generated/agenttrace-v1
-python analysis/phase_02_eda.py
-```
-
-The generator writes a prefix CSV, trace JSONL, manifest, and feature dictionary under `data/generated/agenttrace-v1/`. EDA writes `eda_summary.json` and PNG charts under `analysis/output/agenttrace-v1/`. Both output directories are ignored by Git. The data is synthetic and must not be presented as production telemetry.
-
-For PostgreSQL integration tests, use a separate disposable database and distinct runtime and migration URLs. Create `agentguard_test` once using an administrator; apply migrations using the test migration URL. Grant the test runtime role the same narrow table permissions shown above. Set `AGENTGUARD_TEST_DATABASE_URL` to the runtime role and `AGENTGUARD_TEST_MIGRATION_DATABASE_URL` to the privileged migration/cleanup role:
-
-```bash
-docker compose exec postgres sh -lc 'createdb -U "$POSTGRES_USER" agentguard_test'
-# Set both URLs in .env; the test uses the runtime role for application SQL.
-export AGENTGUARD_TEST_DATABASE_URL='postgresql+psycopg://agentguard_app:<local-placeholder>@localhost:5433/agentguard_test'
-export AGENTGUARD_TEST_MIGRATION_DATABASE_URL='postgresql+psycopg://agentguard_migrator:<local-placeholder>@localhost:5433/agentguard_test'
-python -m pytest -q tests/integration/test_postgres_persistence.py
-```
-
-If `agentguard_test` already exists, skip `createdb` and inspect its privileges. For a new test DB, grant both roles CONNECT, revoke TEMPORARY from PUBLIC on that database, make the migration role the `public` schema owner, and grant runtime schema USAGE. The integration test applies migrations through its migration URL and grants runtime table access using that migration role. It checks effective privileges, including CONNECT, TEMPORARY, schema/table operations, and administrative role attributes. Never point integration tests at a valuable or production database.
-
-The generated dataset is synthetic and small, intended for pipeline experiments rather than evidence of production model quality. For modeling, select only the allow-listed columns in `MODEL_FEATURE_COLUMNS` via `model_feature_matrix`. Do not use IDs or target columns as features. Split samples by `execution_id` at minimum; use `task_template_id` groups when evaluating generalization to unseen task templates. Prefix rows from the same execution share an eventual label and are not independent observations; EDA correlations are descriptive, not inferential.
-
-For provider-backed tool selection, configure `AGENTGUARD_LLM_PROVIDER`, `AGENTGUARD_LLM_MODEL`, and the provider's credential environment variable. The default provider integration dependency is `langchain-openai`; install the relevant LangChain integration if choosing another provider. The app never claims local mock search results are live internet results.
-
-Set `AGENTGUARD_FAILURE_MODE` to `invalid_arguments`, `timeout`, `unavailable`, or `exception` to inject a controlled tool failure. It is disabled when unset. An invalid value is a configuration error. Status is `completed` when all calls succeed, `partially_completed` when at least one succeeds and another call or execution step fails, and `failed` when no tool call succeeds or provider execution fails before producing a usable result.
+See [Phase 5 implementation details](docs/reports/phase-05-dashboard-report.md) and the Phase 4 reports under [`docs/reports`](docs/reports/).
